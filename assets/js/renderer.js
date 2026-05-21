@@ -42,6 +42,7 @@ const dramaListInput = document.getElementById('drama-list-input');
 let currentVideoUrl = '';
 let isCurrentlyParsing = false;
 let currentYoukuUrl = '';
+let currentVideoTitle = '';
 
 // --- UI 工具 ---
 function showToast(message, type = 'info') {
@@ -187,6 +188,166 @@ const SettingsManager = {
 
 SettingsManager.load();
 
+// --- Platform Name Detection ---
+function getPlatformName(url) {
+    if (!url) return '其他';
+    if (url.includes('v.qq.com')) return '腾讯视频';
+    if (url.includes('iqiyi.com')) return '爱奇艺';
+    if (url.includes('youku.com')) return '优酷';
+    if (url.includes('bilibili.com')) return '哔哩哔哩';
+    if (url.includes('mgtv.com')) return '芒果TV';
+    if (url.includes('movie1080.xyz')) return '影巢movie';
+    if (url.includes('monkey-flix.com')) return '猴影工坊';
+    if (url.includes('letu.me')) return '茉小影';
+    if (url.includes('ncat21.com')) return '网飞猫';
+    return '其他';
+}
+
+// --- Relative Time Formatting ---
+function formatRelativeTime(timestamp) {
+    const now = Date.now();
+    const diff = now - timestamp;
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+    if (minutes < 1) return '刚刚';
+    if (minutes < 60) return minutes + '分钟前';
+    if (hours < 24) return hours + '小时前';
+    if (days < 7) return days + '天前';
+    const date = new Date(timestamp);
+    return (date.getMonth() + 1) + '/' + date.getDate();
+}
+
+// --- Browse History ---
+const MAX_HISTORY = 50;
+let historyCache = [];
+
+const HistoryManager = {
+    async init() {
+        try {
+            historyCache = await window.voidAPI.loadHistory();
+        } catch (e) {
+            historyCache = [];
+        }
+        return historyCache;
+    },
+    add(url, platform, title) {
+        if (!url) return;
+        const displayTitle = (title && !title.includes(url)) ? title : extractTitleFromUrl(url);
+        const filtered = historyCache.filter(h => h.url !== url);
+        filtered.unshift({ url, title: displayTitle, platform, timestamp: Date.now() });
+        if (filtered.length > MAX_HISTORY) {
+            filtered.length = MAX_HISTORY;
+        }
+        historyCache = filtered;
+        // Fire-and-forget persist (async)
+        window.voidAPI.saveHistory(historyCache).catch(() => {});
+    },
+    // 页面标题加载完成后更新历史记录中的标题
+    updateTitle(url, newTitle) {
+        if (!url || !newTitle) return false;
+        const entry = historyCache.find(h => h.url === url);
+        if (entry && entry.title !== newTitle) {
+            entry.title = newTitle;
+            window.voidAPI.saveHistory(historyCache).catch(() => {});
+            return true;
+        }
+        return false;
+    },
+    async clear() {
+        historyCache = [];
+        await window.voidAPI.saveHistory(historyCache);
+    },
+    getAll() {
+        return historyCache;
+    }
+};
+
+// URL 转可读标题（备用方案）
+function extractTitleFromUrl(url) {
+    if (!url) return '未知页面';
+    try {
+        const u = new URL(url);
+        const path = u.pathname.replace(/\/$/, '');
+        const segments = path.split('/').filter(Boolean);
+        // 取最后一段有意义的路径
+        const last = segments[segments.length - 1] || '';
+        if (last.length > 5 && last.length < 80) {
+            return decodeURIComponent(last.replace(/\.html?$/, '').replace(/_/g, ' '));
+        }
+        return u.hostname.replace('www.', '');
+    } catch (e) {
+        return url.length > 40 ? url.slice(0, 40) + '...' : url;
+    }
+}
+
+function renderHistory() {
+    const listEl = document.getElementById('history-list');
+    const badgeEl = document.getElementById('history-badge');
+    if (!listEl || !badgeEl) return;
+    const history = HistoryManager.getAll();
+    badgeEl.textContent = history.length;
+    if (history.length === 0) {
+        listEl.innerHTML = '<div style="font-size:11px;color:var(--text-secondary-color);padding:8px;text-align:center;">暂无记录</div>';
+        return;
+    }
+    listEl.innerHTML = history.map((item, index) => {
+        const displayTitle = item.title || extractTitleFromUrl(item.url);
+        return `<div class="history-item" data-index="${index}" title="${escapeHtml(item.url)}">
+            <div class="history-item-url">${escapeHtml(displayTitle)}</div>
+            <div class="history-item-meta">
+                <span class="history-item-tag">${escapeHtml(item.platform)}</span>
+                <span class="history-item-time">${formatRelativeTime(item.timestamp)}</span>
+            </div>
+        </div>`;
+    }).join('');
+
+    // Bind click events
+    listEl.querySelectorAll('.history-item').forEach(el => {
+        el.addEventListener('click', () => {
+            const index = parseInt(el.dataset.index);
+            const history = HistoryManager.getAll();
+            const item = history[index];
+            if (item) {
+                navigateTo(item.url);
+            }
+        });
+    });
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+async function initHistoryUI() {
+    await HistoryManager.init();
+    renderHistory();
+    const body = document.getElementById('history-body');
+    // 有历史记录时默认展开
+    if (body && HistoryManager.getAll().length > 0) {
+        body.style.display = 'block';
+    }
+    const header = document.getElementById('history-toggle');
+    const clearBtn = document.getElementById('history-clear-btn');
+    if (header && body) {
+        header.addEventListener('click', () => {
+            const isVisible = body.style.display !== 'none';
+            body.style.display = isVisible ? 'none' : 'block';
+            if (!isVisible) renderHistory();
+        });
+    }
+    if (clearBtn) {
+        clearBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            await HistoryManager.clear();
+            renderHistory();
+            const body = document.getElementById('history-body');
+            if (body) body.style.display = 'none';
+        });
+    }
+}
 const platformSelect = document.getElementById('platform-select');
 const apiSelect = document.getElementById('api-select');
 
@@ -213,6 +374,10 @@ function triggerParse() {
     }
 
     if (isCurrentlyParsing && currentVideoUrl) {
+        // 记录浏览历史（页面标题由 main.js 通过 page-title-changed 推送）
+        HistoryManager.add(currentVideoUrl, getPlatformName(currentVideoUrl), currentVideoTitle);
+        renderHistory();
+
         // 立即显示加载状态
         loadingOverlay.classList.remove('hidden');
 
@@ -476,14 +641,32 @@ window.voidAPI.onInitSidebarState((isCollapsed) => {
     }
 });
 
+// 接收 BrowserView 页面标题更新
+window.voidAPI.onPageTitleChanged((title) => {
+    if (title) {
+        const oldTitle = currentVideoTitle;
+        currentVideoTitle = title;
+        console.log('[Renderer] Page title updated:', title);
+        // 标题变化说明新页面加载完成，更新历史记录的标题
+        if (currentVideoUrl && title !== oldTitle) {
+            if (HistoryManager.updateTitle(currentVideoUrl, title)) {
+                renderHistory();
+            }
+        }
+    }
+});
+
 // --- Initialization ---
-function initialize() {
+async function initialize() {
     // Initial UI state setup
     dramaControls.style.display = 'none';
     dramaUsageTips.style.display = 'none';
 
     // Populate Dynamic UI from settings
     refreshDynamicUI();
+
+    // Init browse history (async)
+    await initHistoryUI();
 
     updateDOMForTheme(true);
     // Use setTimeout so the DOM and IPC have time to settle their visual state before navigation triggers
@@ -852,4 +1035,4 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
-initialize();
+initialize().catch(e => console.error('[Init] Error:', e));

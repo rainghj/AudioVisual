@@ -88,6 +88,20 @@ let isSidebarCollapsed = false;
 let currentThemeCss = `:root { --av-primary-bg: #1e1e2f; --av-accent-color: #3a3d5b; --av-highlight-color: #ff6768; }`;
 const scrollbarCss = fs.readFileSync(path.join(__dirname, 'assets', 'css', 'view-style.css'), 'utf8');
 
+// --- Volume Control ---
+const DEFAULT_VOLUME = 0.3; // 30% default volume
+
+function setBrowserViewVolume(targetView, volume) {
+  if (targetView && targetView.webContents && !targetView.webContents.isDestroyed()) {
+    try {
+      targetView.webContents.setAudioOutputVolume(volume);
+    } catch (e) {
+      // Fallback for older Electron versions
+      console.warn('[Volume] setAudioOutputVolume not supported:', e.message);
+    }
+  }
+}
+
 // --- Pre-rendering Logic ---
 const viewPool = new Map(); // Stores fully rendered BrowserViews persistently
 const dramaSites = [
@@ -189,8 +203,19 @@ function attachViewEvents(targetView) {
         updateZoomFactor(targetView); // Set initial zoom
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('load-finished');
+          // 页面加载完成后推送最新标题
+          const title = targetView.webContents.getTitle();
+          if (title) {
+            mainWindow.webContents.send('page-title-changed', title);
+          }
         }
       }
+    }
+  });
+
+  targetView.webContents.on('page-title-updated', (event, title) => {
+    if (view === targetView && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('page-title-changed', title);
     }
   });
 
@@ -326,6 +351,7 @@ function createNewBrowserView() {
   }
 
   newView.setBackgroundColor('#1e1e2f');
+  setBrowserViewVolume(newView, DEFAULT_VOLUME);
   return newView;
 }
 
@@ -440,6 +466,7 @@ function createWindow() {
       if (view && mainWindow) {
         mainWindow.setBrowserView(view);
         view.webContents.setAudioMuted(false);
+        setBrowserViewVolume(view, DEFAULT_VOLUME);
         updateViewBounds(true);
       }
     } else {
@@ -646,6 +673,28 @@ ipcMain.on('download-update', () => {
 
 ipcMain.on('quit-and-install', () => {
   autoUpdater.quitAndInstall();
+});
+
+// --- Browse History Persistence ---
+ipcMain.handle('load-history', async () => {
+  const historyPath = path.join(app.getPath('userData'), 'history.json');
+  try {
+    if (fs.existsSync(historyPath)) {
+      return JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+    }
+  } catch (e) {
+    console.error('Failed to load history:', e);
+  }
+  return [];
+});
+
+ipcMain.handle('save-history', async (event, history) => {
+  const historyPath = path.join(app.getPath('userData'), 'history.json');
+  try {
+    fs.writeFileSync(historyPath, JSON.stringify(history), 'utf8');
+  } catch (e) {
+    console.error('Failed to save history:', e);
+  }
 });
 
 // --- Auto Updater ---

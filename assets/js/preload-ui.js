@@ -42,4 +42,11 @@ contextBridge.exposeInMainWorld('voidAPI', {
   closeWindow: () => ipcRenderer.send('close-window'),
   toggleSidebar: (isCollapsed) => ipcRenderer.send('sidebar-toggle', isCollapsed),
   showWindow: () => ipcRenderer.send('show-window'),
+
+  // Browse history persistence
+  loadHistory: () => ipcRenderer.invoke('load-history'),
+  saveHistory: (history) => ipcRenderer.invoke('save-history', history),
+
+  // Page title update from BrowserView
+  onPageTitleChanged: (callback) => ipcRenderer.on('page-title-changed', (event, ...args) => callback(...args)),
 });
